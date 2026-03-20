@@ -1,0 +1,10 @@
+market-analysis-mcp
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+.env
+.DS_Store
+node_modules/
