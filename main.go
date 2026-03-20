@@ -1,36 +1,33 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/PuerkitoBio/goquery"
 )
 
 // Market represents analyzed market data
 type Market struct {
-	URL            string                 `json:"url"`
-	Positioning    Positioning            `json:"positioning"`
-	Offers         []Offer                `json:"offers"`
-	VoiceTone      VoiceTone              `json:"voice_tone"`
-	DesignSystem   DesignSystem           `json:"design_system"`
-	Competitors    []CompetitorInsight    `json:"competitors"`
-	Recommendations []string              `json:"recommendations"`
-	AnalyzedAt     time.Time              `json:"analyzed_at"`
+	URL             string              `json:"url"`
+	Positioning     Positioning         `json:"positioning"`
+	Offers          []Offer             `json:"offers"`
+	VoiceTone       VoiceTone           `json:"voice_tone"`
+	Recommendations []string            `json:"recommendations"`
+	AnalyzedAt      time.Time           `json:"analyzed_at"`
 }
 
 type Positioning struct {
-	ValueProp      string   `json:"value_proposition"`
-	ICP            []string `json:"ideal_customer_profile"`
-	PainPoints     []string `json:"pain_points"`
-	Differentiation string  `json:"differentiation"`
+	ValueProp       string   `json:"value_proposition"`
+	ICP             []string `json:"ideal_customer_profile"`
+	PainPoints      []string `json:"pain_points"`
+	Differentiation string   `json:"differentiation"`
 }
 
 type Offer struct {
@@ -40,75 +37,33 @@ type Offer struct {
 }
 
 type VoiceTone struct {
-	Tone         string   `json:"tone"`
-	Keywords     []string `json:"keywords"`
-	CopyPatterns []string `json:"copy_patterns"`
+	Tone     string   `json:"tone"`
+	Keywords []string `json:"keywords"`
 }
 
-type DesignSystem struct {
-	PrimaryColor   string `json:"primary_color"`
-	AccentColor    string `json:"accent_color"`
-	BackgroundColor string `json:"background_color"`
-	FontFamily     string `json:"font_family"`
-}
-
-type CompetitorInsight struct {
-	Name           string `json:"name"`
-	Strength       string `json:"strength"`
-	Opportunity    string `json:"opportunity"`
-}
-
-// analyzeWebsite scrapes and analyzes a website
-func analyzeWebsite(ctx context.Context, url string) (*Market, error) {
-	// Create chrome context
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-	)
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
-	defer cancel()
-
-	chromeCtx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
-
-	// Screenshot + HTML
-	var buf []byte
-	var html string
-
-	err := chromedp.Run(chromeCtx,
-		chromedp.Navigate(url),
-		chromedp.Sleep(2*time.Second),
-		chromedp.CaptureScreenshot(&buf),
-		chromedp.OuterHTML("html", &html),
-	)
+// analyzeWebsite fetches and analyzes a website
+func analyzeWebsite(url string) (*Market, error) {
+	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to navigate: %w", err)
+		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
+	defer resp.Body.Close()
 
 	// Parse HTML
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML: %w", err)
 	}
 
-	// Extract data
 	market := &Market{
 		URL:        url,
 		AnalyzedAt: time.Now(),
 	}
 
-	// Positioning (h1, p tags)
+	// Extract data
 	market.Positioning = extractPositioning(doc)
-
-	// Offers (pricing section)
 	market.Offers = extractOffers(doc)
-
-	// Voice & Tone (from copy)
 	market.VoiceTone = extractVoiceTone(doc)
-
-	// Design System (CSS variables, colors)
-	market.DesignSystem = extractDesignSystem(doc)
-
-	// Generate recommendations
 	market.Recommendations = generateRecommendations(market)
 
 	return market, nil
@@ -161,7 +116,7 @@ func extractVoiceTone(doc *goquery.Document) VoiceTone {
 		Keywords: []string{},
 	}
 
-	// Extract repeated words (keywords)
+	// Extract text
 	text := doc.Find("body").Text()
 	words := strings.Fields(strings.ToLower(text))
 	wordCount := make(map[string]int)
@@ -173,75 +128,30 @@ func extractVoiceTone(doc *goquery.Document) VoiceTone {
 	}
 
 	// Top 5 words
-	for w, count := range wordCount {
-		if count > 3 {
+	for w := range wordCount {
+		if len(vt.Keywords) < 5 {
 			vt.Keywords = append(vt.Keywords, w)
-		}
-		if len(vt.Keywords) >= 5 {
-			break
 		}
 	}
 
 	return vt
 }
 
-func extractDesignSystem(doc *goquery.Document) DesignSystem {
-	ds := DesignSystem{
-		FontFamily:      "System UI",
-		PrimaryColor:    "#000000",
-		AccentColor:     "#0066CC",
-		BackgroundColor: "#FFFFFF",
-	}
-
-	// Extract from CSS variables or computed styles
-	doc.Find("[style*='--color'], [style*='color:']").First().Each(func(i int, s *goquery.Selection) {
-		style, _ := s.Attr("style")
-		if strings.Contains(style, "primary") {
-			ds.PrimaryColor = extractColorFromStyle(style)
-		}
-		if strings.Contains(style, "accent") {
-			ds.AccentColor = extractColorFromStyle(style)
-		}
-	})
-
-	return ds
-}
-
-func extractColorFromStyle(style string) string {
-	// Simple color extraction
-	parts := strings.Split(style, "#")
-	if len(parts) > 1 {
-		hex := "#" + strings.Split(parts[1], ";")[0]
-		if len(hex) >= 7 {
-			return hex[:7]
-		}
-	}
-	return "#000000"
-}
-
 func generateRecommendations(market *Market) []string {
 	var recs []string
 
-	// Based on positioning
 	if market.Positioning.ValueProp == "" {
 		recs = append(recs, "Add clear value proposition in hero section")
 	}
 
-	// Based on offers
 	if len(market.Offers) == 0 {
 		recs = append(recs, "Clearly display pricing/offers")
 	} else if len(market.Offers) == 1 {
 		recs = append(recs, "Consider multiple pricing tiers for better conversion")
 	}
 
-	// Based on design
-	if market.DesignSystem.AccentColor == "#0066CC" {
-		recs = append(recs, "Consider a distinctive accent color")
-	}
-
 	recs = append(recs, "Add social proof (testimonials, client count)")
 	recs = append(recs, "Implement clear CTAs on each section")
-	recs = append(recs, "Add FAQ section addressing common objections")
 
 	return recs
 }
@@ -255,6 +165,12 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
 	var req struct {
 		Method string `json:"method"`
 		Params struct {
@@ -262,8 +178,8 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} `json:"params"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -272,10 +188,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	market, err := analyzeWebsite(ctx, req.Params.URL)
+	market, err := analyzeWebsite(req.Params.URL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -302,10 +215,7 @@ func main() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	market, err := analyzeWebsite(ctx, *url)
+	market, err := analyzeWebsite(*url)
 	if err != nil {
 		log.Fatalf("Analysis failed: %v", err)
 	}

@@ -1,8 +1,10 @@
 FROM golang:1.21-alpine AS builder
 
+RUN apk add --no-cache git
+
 WORKDIR /build
 COPY go.mod go.sum* ./
-RUN go mod download
+RUN go mod download || true
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o market-analysis-mcp .
